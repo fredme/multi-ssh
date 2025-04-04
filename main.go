@@ -13,12 +13,14 @@ import (
 )
 
 var (
-	privateKeyFile *string
-	hostFile       *string
-	groupName      *string
-	command        *string
-	debug          *bool
-	tryRun         *bool
+	ansibleGroups   readfile.AnsibleGroups
+	privateKeyFile  *string
+	hostFile        *string
+	groupName       *string
+	command         *string
+	timeoutInSecond *int
+	debug           *bool
+	tryRun          *bool
 )
 
 func init() {
@@ -36,6 +38,7 @@ func init() {
 
 	groupName = flag.String("g", "", "Hosts In Which Group")
 	command = flag.String("cmd", "", "Command To Execute")
+	timeoutInSecond = flag.Int("t", 30, "Timeout In Second")
 	tmp := false
 	debug = &tmp
 	tryRun = &tmp
@@ -57,35 +60,31 @@ func init() {
 }
 
 func main() {
-	groups, err := readfile.ReadAnsbileInventoryFile(*hostFile)
-	if err != nil {
-		log.Printf("readfile.ReadAnsbileInventoryFile error: %v", err)
-		return
+	if ag, err := readfile.ParseAnsibleFile(*hostFile); err != nil {
+		panic(err)
+	} else {
+		ansibleGroups = ag
 	}
 
-	group := readfile.Group{}
-	for _, groupItem := range groups {
-		if groupItem.Name == *groupName {
-			group = groupItem
-			break
-		}
-	}
-	if group.Name == "" {
-		log.Printf("group '%s' not found in inventory file (hosts)", *groupName)
-		return
+	group := ansibleGroups.AddOrGetGroup(*groupName)
+	if len(group.Hosts) == 0 {
+		log.Printf("group '%s' not found or have no hosts\n", *groupName)
+		os.Exit(0)
 	}
 
 	var wg sync.WaitGroup
 	wg.Add(len(group.Hosts))
-	for indexInHosts, host := range group.Hosts {
+	indexInHosts := 0
+	for _, host := range group.Hosts {
+		indexInHosts++
 		if *tryRun {
 			log.Printf("[TRY]\t%s\t[%d/%d]\t%s\n", *groupName, indexInHosts, len(group.Hosts), host.Host)
 			wg.Done()
 			continue
 		}
-		go func(indexInHosts int, host readfile.Host) {
+		go func(indexInHosts int, host *readfile.AnsibleHost) {
 			defer wg.Done()
-			stdout, err := sshclient.SSHCommand(*privateKeyFile, host.Host, host.SSHPort, host.SSHUser, host.SSHPass, *command)
+			stdout, err := sshclient.SSHCommand(*privateKeyFile, host.Host, host.Vars.SSHPort, host.Vars.SSHUser, host.Vars.SSHPass, *command, *timeoutInSecond)
 			if err != nil {
 				log.Printf("[FAILED]\t%s\t[%d/%d]\t%s\n%s\n%s\n", *groupName, indexInHosts, len(group.Hosts), host.Host, err, stdout)
 			} else {

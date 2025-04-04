@@ -1,207 +1,219 @@
 package readfile
 
 import (
-	"bufio"
-	"errors"
-	"fmt"
-	"io"
-	"log"
-	"os"
 	"regexp"
-	"strings"
 )
 
-// ansible inventory文件的变量
-type Vars struct {
-	SSHPort string
+var (
+	regexpUser, regexpPass, regexpPort, RegexpGroupVars, RegexpGroupChildren, RegexpGroup, RegexpHost *regexp.Regexp
+)
+
+type AnsibleVars struct {
 	SSHUser string
 	SSHPass string
+	SSHPort string
 }
 
-type Host struct {
-	Host string
-	Vars
-}
-
-type Group struct {
-	Name  string
-	Hosts []Host
-	Vars
-}
-
-// 读取ansible inventory文件
-func ReadAnsbileInventoryFile(hosts string) ([]Group, error) {
-	f, err := os.Open(hosts)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	blankLine, err := regexp.Compile(`^\s*$`)
-	if err != nil {
-		log.Printf("regexp.Compile error: %v\n", err)
-		return nil, err
-	}
-
-	reader := bufio.NewReader(f)
-	lines := []string{}
-	for {
-		line, err := reader.ReadString('\n')
-		if err == io.EOF {
-			break
-		}
-		line = strings.TrimSuffix(line, "\n")
-		if strings.HasPrefix(line, "#") {
-			continue
-		}
-		if blankLine.Match([]byte(line)) {
-			continue
-		}
-		lines = append(lines, line)
-	}
-
-	return parseGroups(lines)
-}
-
-func parseGroups(lines []string) ([]Group, error) {
-	groups := []Group{}
-
-	groupRegexp, err := regexp.Compile(`^\s*\[(.+)\]\s*$`)
-	if err != nil {
-		log.Printf("regexp.Compile error: %v\n", err)
-	}
-
-	groupName := ""
-	groupVars := false
-	for _, line := range lines {
-		subMatch := groupRegexp.FindStringSubmatch(line)
-
-		// group的行  [www]  [www:vars]
-		if len(subMatch) == 2 {
-			tmpSplit := strings.Split(subMatch[1], ":")
-			// [www]
-			if len(tmpSplit) == 1 {
-				groupName = tmpSplit[0]
-				groupVars = false
-				continue
-			} else if len(tmpSplit) == 2 {
-				// [www:vars]
-				if tmpSplit[1] == "vars" {
-					groupName = tmpSplit[0]
-					groupVars = true
-					continue
-					// [www:unknown]
-				} else {
-					groupName = tmpSplit[0]
-					log.Printf("groupName: %s, unknown tag: %s\n", groupName, tmpSplit[1])
-					continue
-				}
-			} else {
-				// [www:a:b]
-				log.Printf("groupName: %s, line '%s' split with ':' get more than 2 items\n", groupName, line)
-				continue
-			}
-		}
-
-		// 不是group的行
-		index := -1
-		for i, groupItem := range groups {
-			if groupItem.Name == groupName {
-				index = i
-				break
-			}
-		}
-		if index == -1 {
-			groups = append(groups, Group{
-				Name:  groupName,
-				Hosts: []Host{},
-			})
-			index = len(groups) - 1
-		}
-
-		if groupVars {
-			parseGroupVars(line, &groups[index])
-		} else {
-			host, err := parseHost(line)
-			if err != nil {
-				log.Printf("parseHost error: %v\n", err)
-				continue
-			}
-
-			inHosts := false
-			for indexInHosts, hostItem := range groups[index].Hosts {
-				if hostItem.Host == host.Host {
-					groups[index].Hosts[indexInHosts] = host
-					inHosts = true
-					break
-				}
-			}
-			if !inHosts {
-				groups[index].Hosts = append(groups[index].Hosts, host)
-			}
-		}
-	}
-
-	// 从groups vars同步vars到hosts
-	for indexInGroups, groupItem := range groups {
-		for indexInHosts, hostItem := range groupItem.Hosts {
-			if hostItem.SSHPort == "" {
-				groups[indexInGroups].Hosts[indexInHosts].SSHPort = groupItem.SSHPort
-			} else if hostItem.SSHUser == "" {
-				groups[indexInGroups].Hosts[indexInHosts].SSHUser = groupItem.SSHUser
-			} else if hostItem.SSHPass == "" {
-				groups[indexInGroups].Hosts[indexInHosts].SSHPass = groupItem.SSHPass
-			}
-		}
-	}
-	return groups, nil
-}
-
-// 解析group vars
-func parseGroupVars(line string, group *Group) error {
-	tmpSplit := strings.Split(line, "=")
-	if len(tmpSplit) == 2 {
-		if tmpSplit[0] == "ansible_ssh_user" {
-			group.SSHUser = tmpSplit[1]
-		} else if tmpSplit[0] == "ansible_ssh_pass" {
-			group.SSHPass = tmpSplit[1]
-		} else if tmpSplit[0] == "ansible_ssh_port" {
-			group.SSHPort = tmpSplit[1]
-		} else {
-			return fmt.Errorf("unknown group vars: %s", tmpSplit[0])
-		}
-		return nil
-	}
-	return fmt.Errorf("line '%s' split with '=' get not 2 items", line)
-}
-
-// 解析host
-func parseHost(line string) (host Host, err error) {
-	fields := strings.Fields(line)
-	if len(fields) >= 1 {
-		host.Host = fields[0]
+func init() {
+	if regexpTmp, err := regexp.Compile(`ansible_ssh_user=([^\s]+)`); err != nil {
+		panic(err)
 	} else {
-		return host, errors.New("line split with ' ' get less than 1 items")
+		regexpUser = regexpTmp
 	}
 
-	for _, field := range fields[1:] {
-		if strings.Contains(field, "=") {
-			tmpSplit := strings.Split(field, "=")
-			if len(tmpSplit) == 2 {
-				if tmpSplit[0] == "ansible_ssh_user" {
-					host.SSHUser = tmpSplit[1]
-				} else if tmpSplit[0] == "ansible_ssh_pass" {
-					host.SSHPass = tmpSplit[1]
-				} else if tmpSplit[0] == "ansible_ssh_port" {
-					host.SSHPort = tmpSplit[1]
-				} else {
-					// log.Printf("unknown host vars: %s\n", tmpSplit[0])
+	if regexpTmp, err := regexp.Compile(`ansible_ssh_pass=([^\s]+)`); err != nil {
+		panic(err)
+	} else {
+		regexpPass = regexpTmp
+	}
+
+	if regexpTmp, err := regexp.Compile(`ansible_ssh_port=([0-9]+)`); err != nil {
+		panic(err)
+	} else {
+		regexpPort = regexpTmp
+	}
+
+	if regexpTmp, err := regexp.Compile(`^\[([^\s]+):vars\]$`); err != nil {
+		panic(err)
+	} else {
+		RegexpGroupVars = regexpTmp
+	}
+
+	if regexpTmp, err := regexp.Compile(`^\[([^\s]+):children\]$`); err != nil {
+		panic(err)
+	} else {
+		RegexpGroupChildren = regexpTmp
+	}
+
+	if regexpTmp, err := regexp.Compile(`^\[([^:]+)\]$`); err != nil {
+		panic(err)
+	} else {
+		RegexpGroup = regexpTmp
+	}
+
+	if regexpTmp, err := regexp.Compile(`^([^\s]+)`); err != nil {
+		panic(err)
+	} else {
+		RegexpHost = regexpTmp
+	}
+}
+
+func (vars *AnsibleVars) Update(line Line) bool {
+	updated := false
+	matchSub := regexpUser.FindStringSubmatch(line.Line)
+	if len(matchSub) == 2 {
+		vars.SSHUser = matchSub[1]
+		updated = true
+	}
+
+	matchSub = regexpPass.FindStringSubmatch(line.Line)
+	if len(matchSub) == 2 {
+		vars.SSHPass = matchSub[1]
+		updated = true
+	}
+
+	matchSub = regexpPort.FindStringSubmatch(line.Line)
+	if len(matchSub) == 2 {
+		vars.SSHPort = matchSub[1]
+		updated = true
+	}
+
+	return updated
+}
+
+type AnsibleHost struct {
+	Host string
+	Vars AnsibleVars
+}
+
+type AnsibleHosts map[string]*AnsibleHost
+
+func (hosts AnsibleHosts) AddOrUpdateHost(host *AnsibleHost) {
+	hosts[host.Host] = host
+}
+
+type AnsibleGroup struct {
+	GroupName string
+	Vars      AnsibleVars
+	Children  AnsibleGroups
+	Hosts     AnsibleHosts
+}
+
+func NewAnsibleGroup(groupName string) *AnsibleGroup {
+	return &AnsibleGroup{
+		GroupName: groupName,
+		Vars:      AnsibleVars{},
+		Children:  AnsibleGroups{},
+		Hosts:     AnsibleHosts{},
+	}
+}
+
+type AnsibleGroups map[string]*AnsibleGroup
+
+// 没有就添加并返回，有就返回
+func (groups AnsibleGroups) AddOrGetGroup(groupName string) *AnsibleGroup {
+	if _, ok := groups[groupName]; !ok {
+		groups[groupName] = NewAnsibleGroup(groupName)
+	}
+	return groups[groupName]
+}
+
+func (groups AnsibleGroups) AddOrUpdateGroup(group *AnsibleGroup) {
+	groups[group.GroupName] = group
+}
+
+func ParseAnsibleFile(filepath string) (AnsibleGroups, error) {
+	lines, err := ReadFile(filepath)
+	if err != nil {
+		return nil, err
+	}
+
+	ansibleGroups := AnsibleGroups{}
+	var group *AnsibleGroup
+	var nextLineType LineType
+	for _, line := range lines {
+		matchSub := RegexpGroupVars.FindStringSubmatch(line.Line)
+		if len(matchSub) == 2 {
+			group = ansibleGroups.AddOrGetGroup(matchSub[1])
+			nextLineType = LineTypeAnsibleGroupVars
+			continue
+		}
+
+		matchSub = RegexpGroupChildren.FindStringSubmatch(line.Line)
+		if len(matchSub) == 2 {
+			group = ansibleGroups.AddOrGetGroup(matchSub[1])
+			nextLineType = LineTypeAnsibleGroupChildren
+			continue
+		}
+
+		matchSub = RegexpGroup.FindStringSubmatch(line.Line)
+		if len(matchSub) == 2 {
+			group = ansibleGroups.AddOrGetGroup(matchSub[1])
+			nextLineType = LineTypeAnsibleHost
+			continue
+		}
+
+		if nextLineType == LineTypeAnsibleGroupVars {
+			group.Vars.Update(line)
+			ansibleGroups.AddOrUpdateGroup(group)
+			continue
+		}
+
+		if nextLineType == LineTypeAnsibleGroupChildren {
+			group.Children.AddOrGetGroup(line.Line)
+			ansibleGroups.AddOrUpdateGroup(group)
+			continue
+		}
+
+		if nextLineType == LineTypeAnsibleHost {
+			matchSub = RegexpHost.FindStringSubmatch(line.Line)
+			if len(matchSub) == 2 {
+				host := &AnsibleHost{
+					Host: matchSub[1],
+					Vars: AnsibleVars{},
 				}
+				host.Vars.Update(line)
+				group.Hosts.AddOrUpdateHost(host)
+				ansibleGroups.AddOrUpdateGroup(group)
 			}
-		} else {
-			log.Printf("host field '%s' format error\n", field)
 		}
 	}
 
-	return host, nil
+	// 数据变量
+	for _, group := range ansibleGroups {
+		for _, host := range group.Hosts {
+			if host.Vars.SSHUser == "" {
+				host.Vars.SSHUser = group.Vars.SSHUser
+			}
+			if host.Vars.SSHPass == "" {
+				host.Vars.SSHPass = group.Vars.SSHPass
+			}
+			if host.Vars.SSHPort == "" {
+				host.Vars.SSHPort = group.Vars.SSHPort
+			}
+			group.Hosts.AddOrUpdateHost(host)
+		}
+		ansibleGroups.AddOrUpdateGroup(group)
+	}
+
+	for _, group := range ansibleGroups {
+		for _, child := range group.Children {
+			g := ansibleGroups.AddOrGetGroup(child.GroupName)
+			for _, host := range g.Hosts {
+				if host.Vars.SSHUser == "" {
+					host.Vars.SSHUser = group.Vars.SSHUser
+				}
+				if host.Vars.SSHPass == "" {
+					host.Vars.SSHPass = group.Vars.SSHPass
+				}
+				if host.Vars.SSHPort == "" {
+					host.Vars.SSHPort = group.Vars.SSHPort
+				}
+				group.Hosts.AddOrUpdateHost(host)
+			}
+		}
+		ansibleGroups.AddOrUpdateGroup(group)
+	}
+
+	return ansibleGroups, nil
 }

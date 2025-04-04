@@ -1,7 +1,16 @@
+[web:vars]
+ansible_ssh_user=admin
+ansible_ssh_pass=123456
+#ansible_ssh_port=22
+
+[web:children]
+www
+login
+
 [www:vars]
 ansible_ssh_user=admin
 ansible_ssh_pass=123456
-ansible_ssh_port=22
+ansible_ssh_port=2222
 
 [www]
 10.0.1.1    ansible_ssh_user=root   ansible_ssh_port=6022

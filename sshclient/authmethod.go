@@ -1,14 +1,14 @@
 package sshclient
 
 import (
-	"multi-ssh/readfile"
+	"os"
 
 	"golang.org/x/crypto/ssh"
 )
 
 // AuthMethod 私钥 认证方法
 func sshPublicKeyAuthMethod(privateKeyFile string) (ssh.AuthMethod, error) {
-	key, err := readfile.ReadFile(privateKeyFile)
+	key, err := os.ReadFile(privateKeyFile)
 	if err != nil {
 		return nil, err
 	}

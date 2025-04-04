@@ -3,11 +3,12 @@ package sshclient
 import (
 	"fmt"
 	"log"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 )
 
-func SSHCommand(privateKeyFile, ip, port, username, password, command string) (string, error) {
+func SSHCommand(privateKeyFile, ip, port, username, password, command string, timeoutInSecond int) (string, error) {
 	allAuthMethods := []ssh.AuthMethod{}
 
 	publicKeyAuthMethod, err := sshPublicKeyAuthMethod(privateKeyFile)
@@ -33,6 +34,7 @@ func SSHCommand(privateKeyFile, ip, port, username, password, command string) (s
 		User:            username,
 		Auth:            allAuthMethods,
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         time.Second * time.Duration(timeoutInSecond),
 	})
 	if err != nil {
 		return "", err
